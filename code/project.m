@@ -10,14 +10,30 @@
 close all;
 clearvars;
 
+% Parameters and thresholds.
+recompute = 1; % 1 implies to recompute, 0 implies not to recompute.
+test_flag = 1; % 1 implies to compare filling result to actual in controled environment.
+
+dpm_resize_factor = 1; % Resize the image bigger to detect smaller objects.
+% This is used to modify the threshold given by the dpm algorithm, since
+% the original threshold will detect false positive objects.
+dpm_model_threshold = 0.4; % 0.4-0.5 scale 40%-50% of original
+dpm_nms_threshold = 0.3; % 1 is not to use it.
+sift_matching_threshold = 0.3;
+
 % Read the test images, where source is the image with occlusion, data is
 % the image without occlusion.
-source = imread('../data/project/source.jpg');
-data = imread('../data/project/data.jpg');
-recompute = 0;
+source = imread('../data/project/source5.2.jpg');
+data = imread('../data/project/data5.jpg');
+if (test_flag == 1)
+    test = imread('../data/project/test5.jpg');
+    test_d = 0;
+    test_n = 0;
+end
 
 % Use DPM to detect the objects (Cars). If it has not yet being detected 
 % before. Results are stored in the folder /results.
+% If recompute == 1 then this algorithm will recompute the DS of DMP.
 if (recompute == 1 || exist('results/ds_source.mat', 'file') == 0 || ...
     exist('results/ds_data.mat', 'file') == 0)
     dataCar = getData([], [], 'detector-car');
@@ -27,15 +43,15 @@ if (recompute == 1 || exist('results/ds_source.mat', 'file') == 0 || ...
     
     % Resize the data image, it works better for detecting small objects in
     % DPM.
-    f = 3;
+    f = dpm_resize_factor;
     sourcer = imresize(source,f);
 
     % Detect car objects.
     % You may need to reduce the threshold if you want more detections.
-    model.thresh = model.thresh*0.3;
+    model.thresh = model.thresh*dpm_model_threshold;
     [ds, bs] = imgdetect(sourcer, model, model.thresh);
     % Non-maximum suppression to eliminate overlapping object detection.
-    nms_thresh = 0.3;
+    nms_thresh = dpm_nms_threshold;
     top = nms(ds, nms_thresh);
     if model.type == model_types.Grammar
         bs = [ds(:,1:4) bs];
@@ -55,15 +71,15 @@ if (recompute == 1 || exist('results/ds_source.mat', 'file') == 0 || ...
 
     % Resize the data image, it works better for detecting small objects in
     % DPM.
-    f = 3;
+    f = dpm_resize_factor;
     datar = imresize(data,f);
 
     % Detect car objects.
     % You may need to reduce the threshold if you want more detections.
-    model.thresh = model.thresh*0.8;
+    model.thresh = model.thresh*dpm_model_threshold;
     [ds, bs] = imgdetect(datar, model, model.thresh);
     % Non-maximum suppression to eliminate overlapping object detection.
-    nms_thresh = 0.3;
+    nms_thresh = dpm_nms_threshold;
     top = nms(ds, nms_thresh);
     if model.type == model_types.Grammar
         bs = [ds(:,1:4) bs];
@@ -79,7 +95,7 @@ if (recompute == 1 || exist('results/ds_source.mat', 'file') == 0 || ...
     filename = sprintf('ds_data.mat');
     save(['results/' filename],'ds_data');
 
-% The DPM has already been computed.    
+% The DPM has already been computed, and we can simply load them.   
 else
     ds_source = importdata('results/ds_source.mat');
     ds_data = importdata('results/ds_data.mat');
@@ -100,6 +116,7 @@ axis off;
 showboxes(data, ds_data, 'r', 'Car');
 
 % Use SIFT to find all matching key points on the two images.
+% Convert images to greyscale due to the definition of SIFT feature vector.
 source_grey = single(rgb2gray(source));
 data_grey = single(rgb2gray(data));
 
@@ -108,17 +125,19 @@ data_grey = single(rgb2gray(data));
 [F_data_grey, D_data_grey] = vl_sift(data_grey);
 
 % Find keypoint matching pairs.
-% distances is the the two smallest distance between a point in D_source_grey with all
-% points in D_data_grey. Indices of indices tells which vertex in Df is being
-% matched, and each indices(:, ?) tells the indices of the two smallest
-% distance of D_data_grey.
+% distances is the the two smallest distance between a point in D_source_grey 
+% with all other points in D_data_grey. Indices of indices tells which vertex 
+% in Df is being matched.
 [distances, indices] = pdist2(transpose(D_data_grey), transpose(D_source_grey), ...
     'euclidean', 'Smallest',2);
-% matches stores the matching pair.
+% Creat matches to stores the matching pair, for simplicity.
 matches = [];
-% threshold is usually 0.8
-thrshold = 0.3;
+% threshold is usually 0.8, indicate how similar the most similar match
+% compared to the second most similar pair.
+thrshold = sift_matching_threshold;
 for i = 1:size(indices, 2)
+    % smallest is the most similar match of keypoint i, and seSmallest is 
+    % the second most similar match.
     smallest = distances(1, i);
     secSmallest = distances(2, i);
     matchVal = smallest/secSmallest;
@@ -136,13 +155,14 @@ for i = 1:size(matches, 1)
     matchedPoints1(i, :) = [F_source_grey(1, currMatch(1)), F_source_grey(2, currMatch(1))];
     matchedPoints2(i, :) = [F_data_grey(1, currMatch(2)), F_data_grey(2, currMatch(2))];
 end
+
 % Show the matched pairs.
 figure; ax = axes;
 showMatchedFeatures(source,data,matchedPoints1,matchedPoints2, ...
     'montage','Parent', ax)
 
 % For each object detected in the data image, find 4 key points corners
-% such that they are the smallest bounds of the location of the object.
+% such that they are the most precise bounds of the location of the object.
 for i = 1:size(ds_data, 1)
     top_left = [0 size(data, 1)];
     top_right = [size(data, 2) size(data, 1)];
@@ -162,6 +182,11 @@ for i = 1:size(ds_data, 1)
     bottom_right_dist = abs(pdist([bottom_right; obj_max_x obj_min_y]));
     flag = [0 0 0 0];
     %{
+    % Gen 1.
+    % This is scrapped for clean reason, in the worst case curr_y-obj_max_y
+    % can be minimal, but curr_x-obj_max_x could be very big, causing this
+    % algorithm to select this key point, where as there might be better 
+    % ones out there.
     for j = 1:size(matchedPoints2, 1)
         curr_y = matchedPoints2(j , 2);
         curr_x = matchedPoints2(j , 1);
@@ -195,7 +220,12 @@ for i = 1:size(ds_data, 1)
         end
     end
     %}
+    
     %{
+    % Gen 2.
+    % This algorithm has the flaw of not being able to find keypoints
+    % inside the object's bound if that part is not occluded. Thus the
+    % result is not optimal.
     for j = 1:size(matchedPoints2, 1)
         curr_y = matchedPoints2(j , 2);
         curr_x = matchedPoints2(j , 1);
@@ -234,6 +264,9 @@ for i = 1:size(ds_data, 1)
     end
     %}
     
+    % Gen 3.
+    % FInd the keypoints with the closest manhattan distance between the 
+    % corners of the detected object bound.
     for j = 1:size(matchedPoints2, 1)
         curr_y = matchedPoints2(j , 2);
         curr_x = matchedPoints2(j , 1);
@@ -262,21 +295,13 @@ for i = 1:size(ds_data, 1)
             flag(4) = 1;
         end
     end
-    
-    
-    
-    
-    
-    
-    
-    
-    
+
+    % Visualize the bound made by the 4 keypoints choosen.
     figure; imshow(data)
     hold on
     line([top_left(1), top_right(1), bottom_right(1), bottom_left(1), top_left(1)], ...
         [top_left(2), top_right(2), bottom_right(2), bottom_left(2), top_left(2)], ...
         'color', 'green', 'LineWidth',3) 
-  
     hold off
     
     
@@ -342,7 +367,18 @@ for i = 1:size(ds_data, 1)
             for m = obj_min_y:obj_max_y
                 pixel = [n; m; 1];
                 pixel = round(a*pixel);
-                source(pixel(2), pixel(1), :) = data(m, n, :);
+                if pixel(2) <= size(source, 1) && pixel(1) <= size(source, 2)
+                    % Fill the pixels
+                    source(pixel(2), pixel(1), :) = data(m, n, :);
+                    
+                    % TEST: compare the result to the actual image (in an controlled
+                    % environment.)
+                    if (test_flag == 1)
+                        test_d = test_d + pdist([double(reshape(data(m, n, :), [1 3])); ...
+                            double(reshape(test(pixel(2), pixel(1), :), [1 3]))],'euclidean');
+                        test_n = test_n + 1;
+                    end
+                end
             end
         end
     end
@@ -351,8 +387,9 @@ end
 % Visualize the result.
 figure; imshow(source)
 
-
-
+% Show the score of the result, indicate how close the fillings are to the
+% original in controlled environment.
+test_d/test_n
 
 
 
